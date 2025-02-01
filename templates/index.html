@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload & Access via PIN</title>
+</head>
+<body>
+    <h2>Upload Files</h2>
+    <input type="file" id="fileInput" multiple>
+    <button onclick="uploadFiles()">Upload</button>
+    <p id="pinDisplay"></p>
+
+    <h2>Access Files via PIN</h2>
+    <input type="text" id="pinInput" placeholder="Enter PIN">
+    <button onclick="getFiles()">Get Files</button>
+    <ul id="fileList"></ul>
+
+    <script>
+        let currentPin = "";
+
+        function uploadFiles() {
+            let fileInput = document.getElementById("fileInput");
+            let files = fileInput.files;
+
+            if (files.length === 0) {
+                alert("Please select at least one file.");
+                return;
+            }
+
+            let formData = new FormData();
+            for (let file of files) {
+                formData.append("file", file);
+            }
+
+            // Use the existing PIN if available
+            if (currentPin) {
+                formData.append("pin", currentPin);
+            }
+
+            fetch("/upload", {
+                method: "POST",
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.pin) {
+                    currentPin = data.pin; // Store PIN for further uploads
+                    document.getElementById("pinDisplay").innerText = "Your PIN: " + data.pin;
+                } else {
+                    alert(data.error);
+                }
+            })
+            .catch(error => console.error("Error:", error));
+        }
+
+        function getFiles() {
+            let pin = document.getElementById("pinInput").value;
+
+            fetch("/get-files", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pin: pin })
+            })
+            .then(response => response.json())
+            .then(data => {
+                let fileList = document.getElementById("fileList");
+                fileList.innerHTML = "";
+
+                if (data.files) {
+                    data.files.forEach(file => {
+                        let li = document.createElement("li");
+                        let link = document.createElement("a");
+                        link.href = file.download_url;
+                        link.textContent = file.filename;
+                        link.download = file.filename;
+
+                        li.appendChild(link);
+                        fileList.appendChild(li);
+                    });
+                } else {
+                    alert(data.error);
+                }
+            })
+            .catch(error => console.error("Error:", error));
+        }
+    </script>
+</body>
+</html>

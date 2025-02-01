@@ -1,49 +1,88 @@
-from flask import Flask, request, send_file
-import socket
-app = Flask(__name__)
+from flask import Flask, request, send_file, render_template, jsonify
+import os
+import random
+import string
+import sqlite3
+
+app = Flask(__name__, static_folder="static", template_folder="templates")
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Initialize Database
+def init_db():
+    conn = sqlite3.connect("files.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS file_pins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pin TEXT,
+            filename TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()  # Ensure DB is initialized
+
+def generate_pin():
+    return ''.join(random.choices(string.digits, k=6))  # 6-digit PIN
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
-        return 'No file part in the request', 400
+        return jsonify({"error": "No file part in the request"}), 400
 
-    uploaded_file = request.files['file']
+    uploaded_files = request.files.getlist("file")  # Allow multiple files
+    pin = request.form.get("pin")  # Use existing PIN if provided, else generate a new one
 
-    if uploaded_file.filename == '':
-        return 'No selected file', 400
+    if not pin:
+        pin = generate_pin()
 
-    # Specify the destination directory and file name
-    destination_path = "uploads/" + uploaded_file.filename
+    conn = sqlite3.connect("files.db")
+    cursor = conn.cursor()
 
-    # Save the uploaded file
-    uploaded_file.save(destination_path)
+    for uploaded_file in uploaded_files:
+        if uploaded_file.filename == '':
+            continue
 
-    return 'File uploaded successfully\nTo download it post in terminal: \n\ncurl -OJ http://' + get_ip() + ':5000/download/' + uploaded_file.filename + '.txt', 200
+        destination_path = os.path.join(UPLOAD_FOLDER, uploaded_file.filename)
+        uploaded_file.save(destination_path)
+
+        # Store the PIN and filename in SQLite
+        cursor.execute("INSERT INTO file_pins (pin, filename) VALUES (?, ?)", (pin, uploaded_file.filename))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({"message": "Files uploaded successfully", "pin": pin}), 200
+
+@app.route('/get-files', methods=['POST'])
+def get_files():
+    data = request.json
+    pin = data.get("pin")
+
+    conn = sqlite3.connect("files.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT filename FROM file_pins WHERE pin=?", (pin,))
+    results = cursor.fetchall()
+    conn.close()
+
+    if results:
+        filenames = [row[0] for row in results]
+        file_links = [{"filename": f, "download_url": f"/download/{f}"} for f in filenames]
+        return jsonify({"files": file_links}), 200
+    else:
+        return jsonify({"error": "Invalid PIN"}), 400
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_file(filename):
-    # Specify the path to the file
-    file_path = "uploads/" + filename
-
-    # Send the file for download
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
     return send_file(file_path, as_attachment=True)
 
-def get_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(0)
-    try:
-        # doesn't even have to be reachable
-        s.connect(('10.254.254.254', 1))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
-    return IP
-    print(get_ip())
-
-
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True) # Private network
-    #app.run(debug=True) # Loacally
-
+    app.run(host='0.0.0.0', port=5000, debug=True)
