@@ -3,21 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Upload & Access via PIN</title>
+    <!-- Include Socket.IO client library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.js"></script>
+
+    <title>Multi-PIN File Viewer</title>
+    <style>
+        .pin-container { 
+            display: flex; 
+            gap: 20px; 
+        }
+        .pin-window {
+            border: 2px solid #000;
+            padding: 10px;
+            width: 250px;
+            min-height: 200px;
+            background-color: #f9f9f9;
+        }
+        .file-item {
+            margin: 5px;
+            padding: 5px;
+            background-color: #ddd;
+            cursor: grab;
+        }
+        .container {
+            background-color: rgba(8, 8, 8, 0.788);
+            color: #ddd;
+            height: 100%;
+            width: 100%;
+            margin-top: 10%;
+            margin-left: 5%;
+            margin-right: 5%;
+
+        }
+        body {
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: larger;
+
+        }
+    </style>
 </head>
 <body>
-    <h2>Upload Files</h2>
-    <input type="file" id="fileInput" multiple>
-    <button onclick="uploadFiles()">Upload</button>
-    <p id="pinDisplay"></p>
-
-    <h2>Access Files via PIN</h2>
-    <input type="text" id="pinInput" placeholder="Enter PIN">
-    <button onclick="getFiles()">Get Files</button>
-    <ul id="fileList"></ul>
+    <div class="container">
+        <h2>Upload Files</h2>
+        <input type="file" id="fileInput" multiple>
+        <button onclick="uploadFiles()">Upload</button>
+        <p id="pinDisplay"></p>
+    
+        <h2>File Viewer</h2>
+        <div>
+            <input type="text" id="pinInput" placeholder="Enter PIN">
+            <button onclick="addPinViewer()">Add PIN Viewer</button>
+        </div>
+    
+        <div id="pinContainers" class="pin-container"></div>
+    </div>
 
     <script>
-        let currentPin = "";
+        let activePins = [];
+        console.log("hostname : ", window.location.hostname);
+        var socket = io.connect('http://' + window.location.hostname + ':5000'); 
+        socket.on('connect', function() {
+            console.log("Connected to WebSocket server!");
+        });
+
+        // Listen for new file uploads
+        socket.on('new_file_upload', function(data) {
+            let pin = data.pin;
+            let filename = data.filename;
+            console.log("File uploaded: ", filename)
+            // Refresh the file list for the relevant PIN
+            refreshPinFiles(pin);
+        });
+
+        // Listen for moved files
+        socket.on('move_files', function(data) {
+            let fromPin = data.fromPin;
+            let toPin = data.toPin;
+            let filename = data.filename
+            console.log("file moved from pin: ", fromPin, " to pin: ", toPin, " filename: ", filename);
+            refreshPinFiles(fromPin);
+            refreshPinFiles(toPin);
+        })
 
         function uploadFiles() {
             let fileInput = document.getElementById("fileInput");
@@ -33,56 +100,185 @@
                 formData.append("file", file);
             }
 
-            // Use the existing PIN if available
-            if (currentPin) {
-                formData.append("pin", currentPin);
-            }
+            fetch('/upload', {
+                method: 'POST',
+                body: formData, // formData should include the file and pin
+            })
+            .then(response => response.json())  // Parse the JSON response
+            .then(data => {
+                if (data.pin) {
+                    // Show the PIN for the uploaded file
+                    document.getElementById("pinDisplay").innerText = `Your PIN: ${data.pin}`;
+                    
+                    // Automatically add the viewer with the new pin
+                    addPinViewer(data.pin);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
 
-            fetch("/upload", {
+        function addPinViewer(pin = null) {
+            if (!pin) {
+                pin = document.getElementById("pinInput").value;
+            }
+            if (!pin || activePins.includes(pin)) return;
+
+            activePins.push(pin);
+            let pinDiv = document.createElement("div");
+            pinDiv.className = "pin-window";
+            pinDiv.id = "pin-" + pin;
+            pinDiv.innerHTML = `
+                <h3>PIN: ${pin} 
+                    <button onclick="refreshPinFiles('${pin}')">🔄 Refresh</button>
+                    <button onclick="removePin('${pin}')">❌ Remove</button>
+                </h3>
+                <ul id="files-${pin}" class="file-list" ondrop="drop(event, '${pin}')" ondragover="allowDrop(event)"></ul>
+            `;
+            document.getElementById("pinContainers").appendChild(pinDiv);
+
+            refreshPinFiles(pin);
+        }
+
+        function refreshPinFiles(pin) {
+            fetch("/get-files", {
                 method: "POST",
-                body: formData
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pins: [pin] })  // Only refresh the specific PIN
             })
             .then(response => response.json())
             .then(data => {
-                if (data.pin) {
-                    currentPin = data.pin; // Store PIN for further uploads
-                    document.getElementById("pinDisplay").innerText = "Your PIN: " + data.pin;
-                } else {
-                    alert(data.error);
+                let fileList = document.getElementById("files-" + pin);
+
+                if (!fileList) {
+                    console.warn(`File list container for PIN ${pin} not found.`);
+                    return;  // Exit the function if the file list container doesn't exist
                 }
+
+                fileList.innerHTML = "";
+                (data.files[pin] || []).forEach(file => {
+                    let li = document.createElement("li");
+                    li.className = "file-item";
+                    li.draggable = true;
+                    li.ondragstart = (event) => drag(event, pin, file.filename);
+                    
+                    // Create the download link for the file
+                    let downloadLink = document.createElement("a");
+                    downloadLink.href = file.download_url;
+                    downloadLink.innerText = file.filename;
+                    downloadLink.target = "_blank";  // Open in a new tab
+
+                    // Append the download link to the list item
+                    li.appendChild(downloadLink);
+                    fileList.appendChild(li);
+                });
             })
-            .catch(error => console.error("Error:", error));
+            .catch(error => {
+                console.error("Error fetching file list:", error);
+            });
         }
 
-        function getFiles() {
-            let pin = document.getElementById("pinInput").value;
+        // function refreshPinFiles(pin) {
+        //     console.log("Refreshing pinviewers for pin: ", pin);
+        //     fetch("/get-files", {
+        //         method: "POST",
+        //         headers: { "Content-Type": "application/json" },
+        //         body: JSON.stringify({ pins: [pin] })  // Only refresh the specific PIN
+        //     })
+        //     .then(response => response.json())
+        //     .then(data => {
+        //         let fileList = document.getElementById("files-" + pin);
+        //         fileList.innerHTML = "";
+        //         (data.files[pin] || []).forEach(file => {
+        //             let li = document.createElement("li");
+        //             li.className = "file-item";
+        //             li.draggable = true;
+        //             li.ondragstart = (event) => drag(event, pin, file.filename);
+                    
+        //             // Create the download link for the file
+        //             let downloadLink = document.createElement("a");
+        //             downloadLink.href = file.download_url;
+        //             downloadLink.innerText = file.filename;
+        //             downloadLink.target = "_blank";  // Open in a new tab
 
-            fetch("/get-files", {
+        //             // Append the download link to the list item
+        //             li.appendChild(downloadLink);
+        //             fileList.appendChild(li);
+        //         });
+        //     });
+        // }
+
+        function removePin(pin) {
+            if (!confirm("Are you sure you want to remove this PIN and all its files?")) return;
+
+            // First, delete the files associated with this PIN
+            fetch("/remove-files", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ pin: pin })
             })
             .then(response => response.json())
             .then(data => {
-                let fileList = document.getElementById("fileList");
-                fileList.innerHTML = "";
-
-                if (data.files) {
-                    data.files.forEach(file => {
-                        let li = document.createElement("li");
-                        let link = document.createElement("a");
-                        link.href = file.download_url;
-                        link.textContent = file.filename;
-                        link.download = file.filename;
-
-                        li.appendChild(link);
-                        fileList.appendChild(li);
-                    });
+                if (data.message === "Files and PIN removed successfully") {
+                    // After successful removal, remove the PIN from the UI
+                    document.getElementById("pin-" + pin).remove();
+                    activePins = activePins.filter(p => p !== pin);  // Remove pin from activePins
                 } else {
-                    alert(data.error);
+                    alert("An error occurred while removing the PIN.");
                 }
             })
-            .catch(error => console.error("Error:", error));
+            .catch(error => {
+                console.error("Error:", error);
+                alert("An error occurred while removing the PIN.");
+            });
+        }
+
+        function refreshFiles() {
+            fetch("/get-files", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pins: activePins })
+            })
+            .then(response => response.json())
+            .then(data => {
+                activePins.forEach(pin => {
+                    let fileList = document.getElementById("files-" + pin);
+                    fileList.innerHTML = "";
+                    (data.files[pin] || []).forEach(file => {
+                        let li = document.createElement("li");
+                        li.className = "file-item";
+                        li.draggable = true;
+                        li.ondragstart = (event) => drag(event, pin, file.filename);
+                        li.innerText = file.filename;
+                        fileList.appendChild(li);
+                    });
+                });
+            });
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+        }
+
+        function drag(event, fromPin, filename) {
+            console.log("Dragging from pin: ", fromPin, " file: ", filename);
+            event.dataTransfer.setData("filename", filename);
+            event.dataTransfer.setData("fromPin", fromPin);
+        }
+
+        function drop(event, toPin) {
+            event.preventDefault();
+            let filename = event.dataTransfer.getData("filename");
+            let fromPin = event.dataTransfer.getData("fromPin");
+            console.log("Dropping file: ", filename, " from pin: ", fromPin, " to pin: ", toPin);
+            console.log("TO PIN: ", toPin);
+
+            fetch("/move-file", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ filename, from_pin: fromPin, to_pin: toPin })
+            }).then(refreshFiles);
         }
     </script>
 </body>
